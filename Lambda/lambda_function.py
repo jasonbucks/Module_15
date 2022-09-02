@@ -112,37 +112,67 @@ In this section, you will create an Amazon Lambda function that will validate th
 """
 
 ### Validate Inputs ###
-def validate_inputs(age, investment_amount):
+def validate_data(age, investment_amount, risk_level, intent_request):
     """
     Validate that age is greater than 0 and less than 65
     Validate that investment amount is at least $5000
+    Validate the risk level is None, Low, Medium or High (upper or lower case)
     """
-    
-    age = parse_int(age)
-    investment_amount = parse_int(investment_amount)
-    if age < 1 or age >= 65:
-        return build_validation_result(
-            False,
-            "age",
-            "Age must be greater than 0 but less than 65."
-            "Please provide a valid age."
-        )
-       
-    elif investment_amount < 5000:
-        return build_validation_result(
-            False,
-            "investmentAmount",
-            "The minimum required investment is $5000."
-            "Please provide an updated investment amount."
-        ) 
-    
+
+    if age is not None:
+        # Convert to integer
+        age = parse_int(age)  
+        if age < 1 or age >= 65:
+            return build_validation_result(
+                False,
+                "age",
+                "Age must be greater than 0 and less than 65.  "
+                "Please provide a valid age."
+            )
+
+    if investment_amount is not None:
+        # Convert to integer
+        investment_amount = parse_int(investment_amount)  
+        if investment_amount < 5000:
+            return build_validation_result(
+                False,
+                "investmentAmount",
+                "Investment amount must be greater than or equal to $5000.  "
+                "Please provide a valid investment amount."
+            )
+
+    if risk_level is not None:
+        # Convert inputs to all lower case string
+        risk_level = str(risk_level).lower()
+        if risk_level not in ["none", "low", "medium", "high"]:
+            return build_validation_result(
+                False,
+                "riskLevel",
+                "Risk level must be None, Low, Medium, or High.  "
+                "Please provide a valid risk level."
+            )
+
+    # A True results is returned if age or amount are valid.
+    return build_validation_result(True, None, None)
+
+
+def get_recommendation(risk_level, intent_request):
+    """
+    Returns a buying recommendation based on the user's risk level 
+    """
+    if risk_level == 'none':
+        recommendation = '100% bonds (AGG), 0% equities (SPY)'
+    elif risk_level == 'low':
+        recommendation = '60% bonds (AGG), 40% equities (SPY)'
+    elif risk_level == 'medium':
+        recommendation = '40% bonds (AGG), 60% equities (SPY)'
+    elif risk_level == 'high':
+        recommendation = '20% bonds (AGG), 80% equities (SPY)'
     else:
-        return build_validation_result(
-            True,
-            None,
-            None
-        )
-    
+        recommendation = 'Invalid risk level.  Please retry.'  # Most likely this line is unnecessary, but kept in just in case.
+    return recommendation
+
+
 ### Intents Handlers ###
 def recommend_portfolio(intent_request):
     """
@@ -152,42 +182,49 @@ def recommend_portfolio(intent_request):
     first_name = get_slots(intent_request)["firstName"]
     age = get_slots(intent_request)["age"]
     investment_amount = get_slots(intent_request)["investmentAmount"]
-    risk_level = get_slots(intent_request)["riskLevel"]
+    risk_level = str(get_slots(intent_request)["riskLevel"]).lower()  # convert to lower case string
     source = intent_request["invocationSource"]
 
     if source == "DialogCodeHook":
-        
+
+        # Gets all the slots
+        slots = get_slots(intent_request)
+
         # Verify that inputs have been validated
-        validation = validate_inputs(age, investment_amount)
-        
-        if not validation["isValid"]:
-            slots = get_slots(intent_request)
-            slots[validation["violatedSlot"]] = None
-            # Request new data for invalid input
+        validation_result = validate_data(age, investment_amount, risk_level, intent_request)
+
+        # If the data provided by the user is not valid,
+        # the elicitSlot dialog action is used to re-prompt for the first violation detected.
+        if not validation_result["isValid"]:
+            slots[validation_result["violatedSlot"]] = None  # Cleans invalid slot
+
+            # Returns an elicitSlot dialog to request new data for the invalid slot
             return elicit_slot(
                 intent_request["sessionAttributes"],
                 intent_request["currentIntent"]["name"],
                 slots,
-                validation["violatedSlot"],
-                validation["message"],
+                validation_result["violatedSlot"],
+                validation_result["message"],
             )
-        return delegate(intent_request, get_slots(intent_request))
-    elif source == "FulfillmentCodeHook":
-        # Make recommendation based on user's risk level 
-        recommendation = 'Based on your stated level of risk aversion, we recommend investing in '
-        if risk_level.lower() == 'none':
-            recommendation += '100% bonds (AGG), 0% equities (SPY)'
-        elif risk_level.lower() == 'low':
-            recommendation += '60% bonds (AGG), 40% equities (SPY)'
-        elif risk_level.lower() == 'medium':
-            recommendation += '40% bonds (AGG), 60% equities (SPY)'
-        elif risk_level.lower() == 'high':
-            recommendation += '20% bonds (AGG), 80% equities (SPY)'
-        return close(
-            intent_request['sessionAttributes'], 
-            "Fulfilled", 
-            recommendation
-        )
+
+        # Fetch current session attributes
+        output_session_attributes = intent_request["sessionAttributes"]
+
+        # Once all slots are valid, a delegate dialog is returned to Lex to choose the next course of action.
+        return delegate(output_session_attributes, get_slots(intent_request))
+
+    # Return a message with recommendation included.
+    return close(
+        intent_request["sessionAttributes"],
+        "Fulfilled",
+        {
+            "contentType": "PlainText",
+            "content": """Thank you for your inquiry, {};
+            Based on your information, your recommended investment strategy is: {}.
+            """.format(first_name, get_recommendation(risk_level, intent_request)),
+        },
+    )
+
 
 ### Intents Dispatcher ###
 def dispatch(intent_request):
